@@ -13,27 +13,26 @@ from pfmsoft.eve_auth_manager import (
     __version__,
 )
 
-AUDIENCE = "EVE Online"
-"""Expected JWT audience for EVE SSO access tokens."""
-USER_AGENT = f"{__app_name__} ({__version__}) (+{__url__}) auth_manager stand alone"
+# Typical application settings
+USER_AGENT = f"{__app_name__}/{__version__} ({__url__})"
 """User-Agent header value sent to remote OAuth and ESI services."""
-OAUTH_METADATA_URL = (
-    "https://login.eveonline.com/.well-known/oauth-authorization-server"
-)
-"""URL to fetch OAuth metadata from the ESI auth server."""
+APP_DOMAIN = f"{__app_name__}"
 APP_NAMESPACE = uuid5(NAMESPACE_DNS, __app_name__)
 ENV_PREFIX = __app_name__.replace(".", "_").replace("-", "_").upper() + "_"
 SETTINGS_KEY = ENV_PREFIX + "SETTINGS"
 
+# OAuth-related constants
+AUDIENCE = "EVE Online"
+"""Expected JWT audience for EVE SSO access tokens."""
+OAUTH_METADATA_URL = (
+    "https://login.eveonline.com/.well-known/oauth-authorization-server"
+)
+"""URL to fetch OAuth metadata from the ESI auth server."""
+
 
 @dataclass(slots=True, kw_only=True)
 class EveAuthManagerSettings:
-    """Normalized runtime settings used by the application.
-
-    This lightweight dataclass provides the settings shape consumed by the
-    rest of the codebase without exposing the Pydantic settings dependency
-    directly.
-    """
+    """Normalized runtime settings used by the application."""
 
     application_directory: Path
     authorization_database_path: Path
@@ -41,11 +40,11 @@ class EveAuthManagerSettings:
 
 
 class EveAuthManagerSettingsPydantic(BaseSettings):
-    """Environment-backed settings loader for Eve Auth Manager.
+    """Settings for the application loaded from environment variables and optional `.env` files.
 
-    Loads configuration from environment variables prefixed with
-    `settings.ENV_PREFIX` and supplies default filesystem locations when values
-    are not provided.
+    Values are read from environment variables prefixed with the application name,
+    altered to uppercase and with non-alphanumeric characters replaced by underscores.
+    Values are also read from `.env` or `.env.dev` when present.
     """
 
     model_config = SettingsConfigDict(
@@ -57,30 +56,44 @@ class EveAuthManagerSettingsPydantic(BaseSettings):
 
 
 def get_settings(
-    pydantic_settings: EveAuthManagerSettingsPydantic | None = None,
+    application_directory: Path | None = None,
 ) -> EveAuthManagerSettings:
-    """Build the normalized application settings object.
+    """Build runtime settings from a Pydantic settings model or application directory.
 
     Args:
-        pydantic_settings: Optional preconfigured environment-backed settings
-            instance. If omitted, a default instance is created.
+        application_directory (Path | None): Optional application directory path.
+            If not provided, the default application directory is used.
 
     Returns:
-        EveAuthManagerSettings with resolved database and logging paths.
+        Runtime settings dataclass used by the application.
 
-    Notes:
-        1. If the CLI is run directly, the settings are initialized in the
-           Typer app callback and stored in typer context.obj.
-        2. If the CLI is imported into another CLI, that CLI handles creating the
-           EveAuthManagerSettings object then stores the result in
-           typer context.obj under the SETTINGS_KEY key.
-        3. If this code is imported into another package, that package is
-           responsible for creating the EveAuthManagerSettings object.
+    Raises:
+        ValueError: If the provided application directory exists but is not a directory.
     """
-    pydantic_settings = pydantic_settings or EveAuthManagerSettingsPydantic()
-    application_directory = pydantic_settings.application_directory.resolve()
-    return EveAuthManagerSettings(
+    if application_directory is None:
+        # If the application directory is not provided, use the value from the Pydantic
+        # settings model. This allows for environment variable overrides and .env file loading.
+        application_directory = EveAuthManagerSettingsPydantic().application_directory
+    application_directory = application_directory.expanduser().resolve()
+    if application_directory.exists() and not application_directory.is_dir():
+        raise ValueError(
+            f"Application directory '{application_directory}' exists but is not a directory."
+        )
+    settings = _initialize_settings(application_directory)
+    return settings
+
+
+def _initialize_settings(application_directory: Path) -> EveAuthManagerSettings:
+    """Build default runtime settings.
+
+    Also ensures that the application directories exist.
+    """
+    settings = EveAuthManagerSettings(
         application_directory=application_directory,
         authorization_database_path=application_directory / "eve_auth_manager.sqlite",
         logging_directory=application_directory / "logs",
     )
+    # Ensure that the application directories exist.
+    settings.application_directory.mkdir(parents=True, exist_ok=True)
+    settings.logging_directory.mkdir(parents=True, exist_ok=True)
+    return settings
